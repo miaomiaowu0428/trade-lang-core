@@ -1,0 +1,11 @@
+[package]
+name = "trade-lang-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+trade-meta-compiler = { path = "../trade-meta-compiler" }
+log = "0.4"
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"

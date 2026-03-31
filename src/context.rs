@@ -1,0 +1,118 @@
+//! 任务执行上下文
+//!
+//! `TradeTaskContext` 是跨所有并发 task 共享的状态载体：
+//!   - `vars`   — 策略变量表，RwLock 保护，读多写少场景高效
+//!   - `cancel` — Done 信号 token：任意位置触发后整个 pipeline 取消进入 finally
+//!   - `start`  — 策略入场时间戳，供 Timeout 等计时插件使用
+
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+
+use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
+use trade_meta_compiler::RuntimeValue;
+
+/// 任务上下文（所有并发 task 持有同一个 Arc<TradeTaskContext>）
+#[derive(Clone)]
+pub struct TradeTaskContext {
+    /// 策略变量表（对应 trade 文件 vars 块中声明的变量）
+    pub vars: Arc<RwLock<HashMap<String, RuntimeValue>>>,
+    /// Done 取消信号：`signal_done()` 触发后所有持有该 token 的 task 应及时退出
+    pub cancel: CancellationToken,
+    /// 策略执行开始时间
+    pub start: Instant,
+    /// 隐式上下文存储：protocol_name → Arc<dyn Any + Send + Sync>
+    pub contexts: Arc<RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>>,
+}
+
+impl TradeTaskContext {
+    pub fn new() -> Self {
+        Self {
+            vars: Arc::new(RwLock::new(HashMap::new())),
+            cancel: CancellationToken::new(),
+            start: Instant::now(),
+            contexts: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// 创建绑定到父 cancel token 的上下文
+    ///
+    /// 父 token 取消时，该上下文的 cancel 也会被取消（级联）。
+    /// 但 `signal_done()` 只取消本上下文，不影响父 token。
+    pub fn with_parent_cancel(parent: &CancellationToken) -> Self {
+        Self {
+            vars: Arc::new(RwLock::new(HashMap::new())),
+            cancel: parent.child_token(),
+            start: Instant::now(),
+            contexts: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    // ── 变量访问 ──────────────────────────────────────────────────────────
+
+    pub async fn get_var(&self, name: &str) -> Option<RuntimeValue> {
+        self.vars.read().await.get(name).cloned()
+    }
+
+    pub async fn set_var(&self, name: &str, value: RuntimeValue) {
+        self.vars.write().await.insert(name.to_string(), value);
+    }
+
+    pub async fn snapshot_vars(&self) -> HashMap<String, RuntimeValue> {
+        self.vars.read().await.clone()
+    }
+
+    // ── 隐式上下文 ──────────────────────────────────────────────────────────
+
+    pub async fn produce_context<T: Any + Send + Sync>(&self, protocol: &str, value: T) {
+        self.contexts
+            .write()
+            .await
+            .insert(protocol.to_string(), Arc::new(value));
+    }
+
+    pub async fn get_context<T: Any + Send + Sync>(&self, protocol: &str) -> Option<Arc<T>> {
+        let guard = self.contexts.read().await;
+        guard
+            .get(protocol)
+            .and_then(|v| Arc::clone(v).downcast::<T>().ok())
+    }
+
+    pub async fn consume_context<T: Any + Send + Sync>(&self, protocol: &str) -> Option<Arc<T>> {
+        self.contexts
+            .write()
+            .await
+            .remove(protocol)
+            .and_then(|v| v.downcast::<T>().ok())
+    }
+
+    pub async fn has_context(&self, protocol: &str) -> bool {
+        self.contexts.read().await.contains_key(protocol)
+    }
+
+    // ── Done 信号 ─────────────────────────────────────────────────────────
+
+    pub fn signal_done(&self) {
+        self.cancel.cancel();
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    pub fn done_future(&self) -> tokio_util::sync::WaitForCancellationFuture<'_> {
+        self.cancel.cancelled()
+    }
+
+    pub fn child_token(&self) -> CancellationToken {
+        self.cancel.child_token()
+    }
+}
+
+impl Default for TradeTaskContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
