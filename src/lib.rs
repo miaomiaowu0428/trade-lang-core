@@ -115,7 +115,7 @@ pub trait MonitorHandler: Send + Sync {
 
 /// Pipeline 操作接口抽象
 ///
-/// 控制流 handler（BranchedCallHandler / AllCallHandler）通过此接口
+/// 控制流 handler（ControlFlowHandler / AllCallHandler）通过此接口
 /// 调用 pipeline 的条件评估与执行器执行能力，而不直接依赖具体的 TradePipeline。
 #[async_trait]
 pub trait PipelineOps: Send + Sync + 'static {
@@ -131,12 +131,12 @@ pub trait PipelineOps: Send + Sync + 'static {
     fn clone_ops(&self) -> Arc<dyn PipelineOps>;
 }
 
-/// 分支调用 handler（Spawn / OneOf / 自定义分支语句）
+/// 控制流 handler（Spawn / OneOf / 自定义分支语句）
 ///
 /// 每个分支由 (Condition, Vec\<ExecutorItem\>) 组成。
 /// handler 决定如何调度这些分支（并发竞争、后台派生、顺序匹配等）。
 #[async_trait]
-pub trait BranchedCallHandler: Send + Sync {
+pub trait ControlFlowHandler: Send + Sync {
     async fn execute(
         &self,
         branches: &[(Condition, Vec<ExecutorItem>)],
@@ -166,7 +166,7 @@ pub struct RuntimeRegistry {
     pub executors: HashMap<String, Arc<dyn ExecutorHandler>>,
     pub conditions: HashMap<String, Arc<dyn ConditionHandler>>,
     pub monitors: HashMap<String, Arc<dyn MonitorHandler>>,
-    pub branched_calls: HashMap<String, Arc<dyn BranchedCallHandler>>,
+    pub control_flows: HashMap<String, Arc<dyn ControlFlowHandler>>,
     pub all_calls: HashMap<String, Arc<dyn AllCallHandler>>,
 }
 
@@ -191,8 +191,8 @@ impl RuntimeRegistry {
         self.monitors.insert(name.to_string(), handler);
     }
 
-    pub fn register_branched_call(&mut self, name: &str, handler: Arc<dyn BranchedCallHandler>) {
-        self.branched_calls.insert(name.to_string(), handler);
+    pub fn register_control_flow(&mut self, name: &str, handler: Arc<dyn ControlFlowHandler>) {
+        self.control_flows.insert(name.to_string(), handler);
     }
 
     pub fn register_all_call(&mut self, name: &str, handler: Arc<dyn AllCallHandler>) {
