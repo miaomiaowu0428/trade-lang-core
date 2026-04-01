@@ -20,7 +20,6 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use trade_meta_compiler::ast::{Condition, ExecutorItem};
 use trade_meta_compiler::{RuntimeValue, SymbolCategory, SymbolRegistry, TypeSpec};
 
 pub mod context;
@@ -111,39 +110,6 @@ pub trait MonitorHandler: Send + Sync {
     ) -> monitor_mpsc::Receiver<MonitorMessage>;
 }
 
-// ── Pipeline 操作抽象 & 控制流 Handler ────────────────────────────────────────
-
-/// Pipeline 操作接口抽象
-///
-/// 控制流 handler（ControlFlowHandler）通过此接口
-/// 调用 pipeline 的条件评估与执行器执行能力，而不直接依赖具体的 TradePipeline。
-#[async_trait]
-pub trait PipelineOps: Send + Sync + 'static {
-    /// 评估条件
-    async fn eval_condition(&self, cond: &Condition) -> bool;
-    /// 执行一组 ExecutorItem，返回 true 表示触发了 Done
-    async fn exec_executor_items(&self, items: &[ExecutorItem]) -> bool;
-    /// 当前任务是否已 Done
-    fn is_done(&self) -> bool;
-    /// 发出 Done 信号
-    fn signal_done(&self);
-    /// 克隆一份 ops 句柄（用于 Spawn 等需要 move 进新 task 的场景）
-    fn clone_ops(&self) -> Arc<dyn PipelineOps>;
-}
-
-/// 控制流 handler（Spawn / OneOf / All / 自定义控制流语句）
-///
-/// 每个分支由 (Condition, Vec\<ExecutorItem\>) 组成。
-/// handler 决定如何调度这些分支（并发竞争、后台派生、并发全满足等）。
-#[async_trait]
-pub trait ControlFlowHandler: Send + Sync {
-    async fn execute(
-        &self,
-        branches: &[(Condition, Vec<ExecutorItem>)],
-        ops: Arc<dyn PipelineOps>,
-    ) -> bool;
-}
-
 // ── RuntimeRegistry ───────────────────────────────────────────────────────────
 
 /// 运行时注册表：将符号名映射到其运行时 handler 实现
@@ -155,7 +121,6 @@ pub struct RuntimeRegistry {
     pub executors: HashMap<String, Arc<dyn ExecutorHandler>>,
     pub conditions: HashMap<String, Arc<dyn ConditionHandler>>,
     pub monitors: HashMap<String, Arc<dyn MonitorHandler>>,
-    pub control_flows: HashMap<String, Arc<dyn ControlFlowHandler>>,
 }
 
 impl RuntimeRegistry {
@@ -177,10 +142,6 @@ impl RuntimeRegistry {
 
     pub fn register_monitor(&mut self, name: &str, handler: Arc<dyn MonitorHandler>) {
         self.monitors.insert(name.to_string(), handler);
-    }
-
-    pub fn register_control_flow(&mut self, name: &str, handler: Arc<dyn ControlFlowHandler>) {
-        self.control_flows.insert(name.to_string(), handler);
     }
 
     /// 验证运行时注册表与符号表的一致性
