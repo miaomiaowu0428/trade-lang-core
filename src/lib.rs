@@ -86,13 +86,17 @@ pub trait ExecutorHandler: Send + Sync {
 ///
 /// **注意**：Condition 需要持续轮询时，应通过 `ctx.done_future()` 或
 /// `ctx.cancel.cancelled()` 来响应 Done 信号并提前退出。
+///
+/// 返回值：`(triggered, side_value)`
+///   - `triggered`  — 条件是否满足
+///   - `side_value` — 可选的偏值（如累计询价次数），供 `let x = Cond(...)` 捕获
 #[async_trait]
 pub trait ConditionHandler: Send + Sync {
     async fn evaluate(
         &self,
         args: &HashMap<String, RuntimeValue>,
         ctx: &Arc<TradeTaskContext>,
-    ) -> bool;
+    ) -> (bool, Option<RuntimeValue>);
 }
 
 /// Monitor：启动链上事件监听，通过 channel 发送触发消息
