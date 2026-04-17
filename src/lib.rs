@@ -99,6 +99,20 @@ pub trait ConditionHandler: Send + Sync {
     ) -> (bool, Option<RuntimeValue>);
 }
 
+// ── ConfirmHandle ─────────────────────────────────────────────────────────
+
+/// 需要 confirm/cancel 生命周期管理的句柄。
+///
+/// condition 在 evaluate 时可向 ctx 推入 handle：
+///   - buy 阶段结束且成功 → pipeline 调 `confirm` 使其生效
+///   - buy 失败 → pipeline 调 `cancel` 清理资源
+///   - sell 阶段中推入的 handle → 立即 confirm（已过 buy 阶段）
+#[async_trait]
+pub trait ConfirmHandle: Send + Sync {
+    async fn confirm(&self, ctx: &Arc<TradeTaskContext>);
+    async fn cancel(&self);
+}
+
 /// Monitor：启动链上事件监听，通过 channel 发送触发消息
 ///
 /// 与其他 Handler 不同，Monitor 独立于交易流程运行：

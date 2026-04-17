@@ -10,9 +10,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use trade_meta_compiler::RuntimeValue;
+
+use crate::ConfirmHandle;
 
 /// 任务上下文（所有并发 task 持有同一个 Arc<TradeTaskContext>）
 #[derive(Clone)]
@@ -25,6 +27,10 @@ pub struct TradeTaskContext {
     pub start: Instant,
     /// 隐式上下文存储：protocol_name → Arc<dyn Any + Send + Sync>
     pub contexts: Arc<RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>>,
+    /// condition 推入的待 confirm/cancel 的 handle 列表
+    confirm_handles: Arc<Mutex<Vec<Box<dyn ConfirmHandle>>>>,
+    /// buy 阶段是否已成功完成（sell 阶段 push 的 handle 直接 confirm）
+    buy_confirmed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TradeTaskContext {
@@ -34,6 +40,8 @@ impl TradeTaskContext {
             cancel: CancellationToken::new(),
             start: Instant::now(),
             contexts: Arc::new(RwLock::new(HashMap::new())),
+            confirm_handles: Arc::new(Mutex::new(Vec::new())),
+            buy_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -47,6 +55,8 @@ impl TradeTaskContext {
             cancel: parent.child_token(),
             start: Instant::now(),
             contexts: Arc::new(RwLock::new(HashMap::new())),
+            confirm_handles: Arc::new(Mutex::new(Vec::new())),
+            buy_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -90,6 +100,36 @@ impl TradeTaskContext {
 
     pub async fn has_context(&self, protocol: &str) -> bool {
         self.contexts.read().await.contains_key(protocol)
+    }
+
+    // ── Confirm Handle ────────────────────────────────────────────────────
+
+    /// condition evaluate 时调用：推入一个 handle。
+    /// 若 buy 已成功（sell 阶段），直接 confirm。
+    pub async fn push_confirm_handle(&self, handle: Box<dyn ConfirmHandle>, self_arc: &Arc<Self>) {
+        if self.buy_confirmed.load(std::sync::atomic::Ordering::Acquire) {
+            // 已过 buy 阶段，直接 confirm
+            handle.confirm(self_arc).await;
+        } else {
+            self.confirm_handles.lock().await.push(handle);
+        }
+    }
+
+    /// buy 成功后调用：confirm 所有已推入的 handle，并标记 buy_confirmed
+    pub async fn confirm_all_handles(self: &Arc<Self>) {
+        self.buy_confirmed.store(true, std::sync::atomic::Ordering::Release);
+        let handles: Vec<_> = self.confirm_handles.lock().await.drain(..).collect();
+        for h in handles {
+            h.confirm(self).await;
+        }
+    }
+
+    /// buy 失败后调用：cancel 所有已推入的 handle
+    pub async fn cancel_all_handles(&self) {
+        let handles: Vec<_> = self.confirm_handles.lock().await.drain(..).collect();
+        for h in handles {
+            h.cancel().await;
+        }
     }
 
     // ── Done 信号 ─────────────────────────────────────────────────────────
