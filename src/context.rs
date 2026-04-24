@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 use trade_meta_compiler::RuntimeValue;
 
@@ -31,6 +31,9 @@ pub struct TradeTaskContext {
     confirm_handles: Arc<Mutex<Vec<Box<dyn ConfirmHandle>>>>,
     /// buy 阶段是否已成功完成（sell 阶段 push 的 handle 直接 confirm）
     buy_confirmed: Arc<std::sync::atomic::AtomicBool>,
+    /// buy_confirmed 的变更通知。`confirm_all_handles` 调用后 notify_waiters，
+    /// 等待方使用 `wait_buy_confirmed().await` 阻塞至 buy 成功。
+    buy_confirmed_notify: Arc<Notify>,
 }
 
 impl TradeTaskContext {
@@ -42,6 +45,7 @@ impl TradeTaskContext {
             contexts: Arc::new(RwLock::new(HashMap::new())),
             confirm_handles: Arc::new(Mutex::new(Vec::new())),
             buy_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            buy_confirmed_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -57,6 +61,7 @@ impl TradeTaskContext {
             contexts: Arc::new(RwLock::new(HashMap::new())),
             confirm_handles: Arc::new(Mutex::new(Vec::new())),
             buy_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            buy_confirmed_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -74,6 +79,7 @@ impl TradeTaskContext {
             contexts: Arc::clone(&parent.contexts),
             confirm_handles: Arc::new(Mutex::new(Vec::new())),
             buy_confirmed: Arc::clone(&parent.buy_confirmed),
+            buy_confirmed_notify: Arc::clone(&parent.buy_confirmed_notify),
         }
     }
 
@@ -139,6 +145,8 @@ impl TradeTaskContext {
     pub async fn confirm_all_handles(self: &Arc<Self>) {
         self.buy_confirmed
             .store(true, std::sync::atomic::Ordering::Release);
+        // 唤醒所有 wait_buy_confirmed 的等待者（如 Spawn 中的 condition）
+        self.buy_confirmed_notify.notify_waiters();
         let handles: Vec<_> = self.confirm_handles.lock().await.drain(..).collect();
         for h in handles {
             h.confirm(self).await;
@@ -166,7 +174,30 @@ impl TradeTaskContext {
     pub fn done_future(&self) -> tokio_util::sync::WaitForCancellationFuture<'_> {
         self.cancel.cancelled()
     }
+    // ── buy_confirmed 门──────────────────────────────────────────
 
+    /// 查询 buy 是否已确认（sell 阶段 后恒为 true）
+    pub fn is_buy_confirmed(&self) -> bool {
+        self.buy_confirmed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 阻塞至 buy 确认。若已确认立即返回；否则等待 `confirm_all_handles` 唤醒。
+    /// 主要面向在 buy 块 Spawn 中推入的 condition：为避免漏消息早注册订阅，
+    /// 但不希望在 buy 确认前就触发下游逻辑。
+    pub async fn wait_buy_confirmed(&self) {
+        if self.is_buy_confirmed() {
+            return;
+        }
+        // 先注册 notified（避免 notify_waiters 与下面的 load 之间的竞态）
+        let notified = self.buy_confirmed_notify.notified();
+        tokio::pin!(notified);
+        // 二次检查：若在注册前已 confirm，直接返回
+        if self.is_buy_confirmed() {
+            return;
+        }
+        notified.await;
+    }
     pub fn child_token(&self) -> CancellationToken {
         self.cancel.child_token()
     }
