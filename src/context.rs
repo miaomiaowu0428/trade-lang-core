@@ -60,6 +60,23 @@ impl TradeTaskContext {
         }
     }
 
+    /// 创建 Spawn 后台任务专用的子上下文。
+    ///
+    /// - `vars` / `contexts` / `buy_confirmed` 与父共享（Spawn 需要读 pump_token、trade_hint 等）
+    /// - `cancel` 是父 token 的 child token：父取消 → 子也取消（级联向下）
+    ///   但子调 `signal_done()` **不会**影响父 pipeline（隔离向上）
+    /// - `confirm_handles` 全新空列表（Spawn 任务不参与 buy 确认流程）
+    pub fn spawn_child(parent: &Arc<TradeTaskContext>) -> Self {
+        Self {
+            vars: Arc::clone(&parent.vars),
+            cancel: parent.cancel.child_token(),
+            start: parent.start,
+            contexts: Arc::clone(&parent.contexts),
+            confirm_handles: Arc::new(Mutex::new(Vec::new())),
+            buy_confirmed: Arc::clone(&parent.buy_confirmed),
+        }
+    }
+
     // ── 变量访问 ──────────────────────────────────────────────────────────
 
     pub async fn get_var(&self, name: &str) -> Option<RuntimeValue> {
@@ -107,7 +124,10 @@ impl TradeTaskContext {
     /// condition evaluate 时调用：推入一个 handle。
     /// 若 buy 已成功（sell 阶段），直接 confirm。
     pub async fn push_confirm_handle(&self, handle: Box<dyn ConfirmHandle>, self_arc: &Arc<Self>) {
-        if self.buy_confirmed.load(std::sync::atomic::Ordering::Acquire) {
+        if self
+            .buy_confirmed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             // 已过 buy 阶段，直接 confirm
             handle.confirm(self_arc).await;
         } else {
@@ -117,7 +137,8 @@ impl TradeTaskContext {
 
     /// buy 成功后调用：confirm 所有已推入的 handle，并标记 buy_confirmed
     pub async fn confirm_all_handles(self: &Arc<Self>) {
-        self.buy_confirmed.store(true, std::sync::atomic::Ordering::Release);
+        self.buy_confirmed
+            .store(true, std::sync::atomic::Ordering::Release);
         let handles: Vec<_> = self.confirm_handles.lock().await.drain(..).collect();
         for h in handles {
             h.confirm(self).await;
