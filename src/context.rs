@@ -1,7 +1,7 @@
 //! 任务执行上下文
 //!
 //! `TradeTaskContext` 是跨所有并发 task 共享的状态载体：
-//!   - `vars`   — 策略变量表，RwLock 保护，读多写少场景高效
+//!   - `vars`   — 策略变量表，parking_lot RwLock 保护，同步读写无异步调度开销
 //!   - `cancel` — Done 信号 token：任意位置触发后整个 pipeline 取消进入 finally
 //!   - `start`  — 策略入场时间戳，供 Timeout 等计时插件使用
 
@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{Mutex, Notify, RwLock};
+use parking_lot::RwLock;
+use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use trade_meta_compiler::RuntimeValue;
 
@@ -25,8 +26,8 @@ pub struct TradeTaskContext {
     pub cancel: CancellationToken,
     /// 策略执行开始时间
     pub start: Instant,
-    /// 隐式上下文存储：protocol_name → Arc<dyn Any + Send + Sync>
-    pub contexts: Arc<RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>>,
+    /// 隐式上下文存储：Vec<(protocol_name, value)>，条目数极少，线性扫描最优
+    pub contexts: Arc<RwLock<Vec<(&'static str, Arc<dyn Any + Send + Sync>)>>>,
     /// condition 推入的待 confirm/cancel 的 handle 列表
     confirm_handles: Arc<Mutex<Vec<Box<dyn ConfirmHandle>>>>,
     /// buy 阶段是否已成功完成（sell 阶段 push 的 handle 直接 confirm）
@@ -42,7 +43,7 @@ impl TradeTaskContext {
             vars: Arc::new(RwLock::new(HashMap::new())),
             cancel: CancellationToken::new(),
             start: Instant::now(),
-            contexts: Arc::new(RwLock::new(HashMap::new())),
+            contexts: Arc::new(RwLock::new(Vec::new())),
             confirm_handles: Arc::new(Mutex::new(Vec::new())),
             buy_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             buy_confirmed_notify: Arc::new(Notify::new()),
@@ -58,7 +59,7 @@ impl TradeTaskContext {
             vars: Arc::new(RwLock::new(HashMap::new())),
             cancel: parent.child_token(),
             start: Instant::now(),
-            contexts: Arc::new(RwLock::new(HashMap::new())),
+            contexts: Arc::new(RwLock::new(Vec::new())),
             confirm_handles: Arc::new(Mutex::new(Vec::new())),
             buy_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             buy_confirmed_notify: Arc::new(Notify::new()),
@@ -86,43 +87,46 @@ impl TradeTaskContext {
     // ── 变量访问 ──────────────────────────────────────────────────────────
 
     pub async fn get_var(&self, name: &str) -> Option<RuntimeValue> {
-        self.vars.read().await.get(name).cloned()
+        self.vars.read().get(name).cloned()
     }
 
     pub async fn set_var(&self, name: &str, value: RuntimeValue) {
-        self.vars.write().await.insert(name.to_string(), value);
+        self.vars.write().insert(name.to_string(), value);
     }
 
     pub async fn snapshot_vars(&self) -> HashMap<String, RuntimeValue> {
-        self.vars.read().await.clone()
+        self.vars.read().clone()
     }
 
     // ── 隐式上下文 ──────────────────────────────────────────────────────────
 
-    pub async fn produce_context<T: Any + Send + Sync>(&self, protocol: &str, value: T) {
-        self.contexts
-            .write()
-            .await
-            .insert(protocol.to_string(), Arc::new(value));
+    pub async fn produce_context<T: Any + Send + Sync>(&self, protocol: &'static str, value: T) {
+        self.contexts.write().push((protocol, Arc::new(value)));
     }
 
-    pub async fn get_context<T: Any + Send + Sync>(&self, protocol: &str) -> Option<Arc<T>> {
-        let guard = self.contexts.read().await;
+    pub async fn get_context<T: Any + Send + Sync>(
+        &self,
+        protocol: &'static str,
+    ) -> Option<Arc<T>> {
+        let guard = self.contexts.read();
         guard
-            .get(protocol)
-            .and_then(|v| Arc::clone(v).downcast::<T>().ok())
+            .iter()
+            .find(|(k, _)| *k == protocol)
+            .and_then(|(_, v)| Arc::clone(v).downcast::<T>().ok())
     }
 
-    pub async fn consume_context<T: Any + Send + Sync>(&self, protocol: &str) -> Option<Arc<T>> {
-        self.contexts
-            .write()
-            .await
-            .remove(protocol)
-            .and_then(|v| v.downcast::<T>().ok())
+    pub async fn consume_context<T: Any + Send + Sync>(
+        &self,
+        protocol: &'static str,
+    ) -> Option<Arc<T>> {
+        let mut guard = self.contexts.write();
+        let pos = guard.iter().position(|(k, _)| *k == protocol)?;
+        let (_, v) = guard.swap_remove(pos);
+        v.downcast::<T>().ok()
     }
 
-    pub async fn has_context(&self, protocol: &str) -> bool {
-        self.contexts.read().await.contains_key(protocol)
+    pub async fn has_context(&self, protocol: &'static str) -> bool {
+        self.contexts.read().iter().any(|(k, _)| *k == protocol)
     }
 
     // ── Confirm Handle ────────────────────────────────────────────────────
