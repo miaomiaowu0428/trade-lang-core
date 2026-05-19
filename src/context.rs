@@ -86,28 +86,51 @@ impl TradeTaskContext {
 
     // ── 变量访问 ──────────────────────────────────────────────────────────
 
-    pub async fn get_var(&self, name: &str) -> Option<RuntimeValue> {
+    /// Sync variant — 用于 pipeline 内部热路径，避免 async 状态机开销。
+    #[inline]
+    pub fn get_var_sync(&self, name: &str) -> Option<RuntimeValue> {
         self.vars.read().get(name).cloned()
     }
 
-    pub async fn set_var(&self, name: &str, value: RuntimeValue) {
+    /// Sync variant — 用于 pipeline 内部热路径。
+    #[inline]
+    pub fn set_var_sync(&self, name: &str, value: RuntimeValue) {
         self.vars.write().insert(name.to_string(), value);
     }
 
-    pub async fn snapshot_vars(&self) -> HashMap<String, RuntimeValue> {
+    /// Sync variant — 返回当前全量快照。
+    #[inline]
+    pub fn snapshot_vars_sync(&self) -> HashMap<String, RuntimeValue> {
         self.vars.read().clone()
+    }
+
+    // async 包装，保持与 macro 生成代码及外部 handler 的兼容性
+    #[inline]
+    pub async fn get_var(&self, name: &str) -> Option<RuntimeValue> {
+        self.get_var_sync(name)
+    }
+
+    #[inline]
+    pub async fn set_var(&self, name: &str, value: RuntimeValue) {
+        self.set_var_sync(name, value);
+    }
+
+    #[inline]
+    pub async fn snapshot_vars(&self) -> HashMap<String, RuntimeValue> {
+        self.snapshot_vars_sync()
     }
 
     // ── 隐式上下文 ──────────────────────────────────────────────────────────
 
-    pub async fn produce_context<T: Any + Send + Sync>(&self, protocol: &'static str, value: T) {
+    /// Sync variant
+    #[inline]
+    pub fn produce_context_sync<T: Any + Send + Sync>(&self, protocol: &'static str, value: T) {
         self.contexts.write().push((protocol, Arc::new(value)));
     }
 
-    pub async fn get_context<T: Any + Send + Sync>(
-        &self,
-        protocol: &'static str,
-    ) -> Option<Arc<T>> {
+    /// Sync variant
+    #[inline]
+    pub fn get_context_sync<T: Any + Send + Sync>(&self, protocol: &'static str) -> Option<Arc<T>> {
         let guard = self.contexts.read();
         guard
             .iter()
@@ -115,7 +138,9 @@ impl TradeTaskContext {
             .and_then(|(_, v)| Arc::clone(v).downcast::<T>().ok())
     }
 
-    pub async fn consume_context<T: Any + Send + Sync>(
+    /// Sync variant — 取出并移除上下文条目。
+    #[inline]
+    pub fn consume_context_sync<T: Any + Send + Sync>(
         &self,
         protocol: &'static str,
     ) -> Option<Arc<T>> {
@@ -125,8 +150,37 @@ impl TradeTaskContext {
         v.downcast::<T>().ok()
     }
 
-    pub async fn has_context(&self, protocol: &'static str) -> bool {
+    /// Sync variant
+    #[inline]
+    pub fn has_context_sync(&self, protocol: &'static str) -> bool {
         self.contexts.read().iter().any(|(k, _)| *k == protocol)
+    }
+
+    // async 包装
+    #[inline]
+    pub async fn produce_context<T: Any + Send + Sync>(&self, protocol: &'static str, value: T) {
+        self.produce_context_sync(protocol, value);
+    }
+
+    #[inline]
+    pub async fn get_context<T: Any + Send + Sync>(
+        &self,
+        protocol: &'static str,
+    ) -> Option<Arc<T>> {
+        self.get_context_sync(protocol)
+    }
+
+    #[inline]
+    pub async fn consume_context<T: Any + Send + Sync>(
+        &self,
+        protocol: &'static str,
+    ) -> Option<Arc<T>> {
+        self.consume_context_sync(protocol)
+    }
+
+    #[inline]
+    pub async fn has_context(&self, protocol: &'static str) -> bool {
+        self.has_context_sync(protocol)
     }
 
     // ── Confirm Handle ────────────────────────────────────────────────────

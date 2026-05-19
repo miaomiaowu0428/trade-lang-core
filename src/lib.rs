@@ -18,6 +18,7 @@
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::Arc;
 
 use trade_meta_compiler::{RuntimeValue, SymbolCategory, SymbolRegistry, TypeSpec};
@@ -133,12 +134,23 @@ pub trait MonitorHandler: Send + Sync {
 /// 运行时注册表：将符号名映射到其运行时 handler 实现
 ///
 /// 由 impl crate 填充（如 mock_dex 或 solana-impl），由 runtime provider 读取调度。
-#[derive(Default)]
+/// 使用 `ahash::AHashMap` 替代标准库 HashMap，string 键查找速度约快 2-3×。
 pub struct RuntimeRegistry {
-    pub data_items: HashMap<String, Arc<dyn DataItemHandler>>,
-    pub executors: HashMap<String, Arc<dyn ExecutorHandler>>,
-    pub conditions: HashMap<String, Arc<dyn ConditionHandler>>,
-    pub monitors: HashMap<String, Arc<dyn MonitorHandler>>,
+    pub data_items: AHashMap<String, Arc<dyn DataItemHandler>>,
+    pub executors: AHashMap<String, Arc<dyn ExecutorHandler>>,
+    pub conditions: AHashMap<String, Arc<dyn ConditionHandler>>,
+    pub monitors: AHashMap<String, Arc<dyn MonitorHandler>>,
+}
+
+impl Default for RuntimeRegistry {
+    fn default() -> Self {
+        Self {
+            data_items: AHashMap::new(),
+            executors: AHashMap::new(),
+            conditions: AHashMap::new(),
+            monitors: AHashMap::new(),
+        }
+    }
 }
 
 impl RuntimeRegistry {
