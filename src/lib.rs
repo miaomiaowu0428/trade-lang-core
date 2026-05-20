@@ -15,10 +15,10 @@
 //!         ↑                       ↑
 //!   runtime-provider          solana-impl
 
+use ahash::AHashMap;
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::HashMap;
-use ahash::AHashMap;
 use std::sync::Arc;
 
 use trade_meta_compiler::{RuntimeValue, SymbolCategory, SymbolRegistry, TypeSpec};
@@ -48,6 +48,10 @@ where
 pub struct MonitorMessage {
     /// (protocol_name, context_value) 列表
     pub contexts: Vec<(&'static str, Arc<dyn Any + Send + Sync>)>,
+    /// 触发信号的源头时刻（如 shred 收到的 Instant），由 Monitor 填写。
+    /// Runner 创建 ctx 时会把它复制到 `TradeTaskContext::sig_time`，
+    /// pipeline 自动用其打印每个 Symbol 的端到端耗时。
+    pub sig_time: Option<std::time::Instant>,
 }
 
 impl MonitorMessage {
@@ -55,6 +59,7 @@ impl MonitorMessage {
     pub fn single(protocol: &'static str, value: impl Any + Send + Sync) -> Self {
         Self {
             contexts: vec![(protocol, Arc::new(value))],
+            sig_time: None,
         }
     }
 }

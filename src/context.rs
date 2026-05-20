@@ -26,6 +26,10 @@ pub struct TradeTaskContext {
     pub cancel: CancellationToken,
     /// 策略执行开始时间
     pub start: Instant,
+    /// 触发信号到达时刻（shred/gRPC 收到的 Instant），由 Monitor 在发出 MonitorMessage
+    /// 时写入，Runner 创建 ctx 时透传。pipeline 自动用此打印每个 Symbol 的端到端耗时。
+    /// 与 start 的区别：start 是 ctx 创建时刻（受 tokio 调度影响），sig_time 是信号源头时刻。
+    pub sig_time: Option<Instant>,
     /// 隐式上下文存储：Vec<(protocol_name, value)>，条目数极少，线性扫描最优
     pub contexts: Arc<RwLock<Vec<(&'static str, Arc<dyn Any + Send + Sync>)>>>,
     /// condition 推入的待 confirm/cancel 的 handle 列表
@@ -43,6 +47,7 @@ impl TradeTaskContext {
             vars: Arc::new(RwLock::new(HashMap::new())),
             cancel: CancellationToken::new(),
             start: Instant::now(),
+            sig_time: None,
             contexts: Arc::new(RwLock::new(Vec::new())),
             confirm_handles: Arc::new(Mutex::new(Vec::new())),
             buy_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -59,6 +64,7 @@ impl TradeTaskContext {
             vars: Arc::new(RwLock::new(HashMap::new())),
             cancel: parent.child_token(),
             start: Instant::now(),
+            sig_time: None,
             contexts: Arc::new(RwLock::new(Vec::new())),
             confirm_handles: Arc::new(Mutex::new(Vec::new())),
             buy_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -77,6 +83,7 @@ impl TradeTaskContext {
             vars: Arc::clone(&parent.vars),
             cancel: parent.cancel.child_token(),
             start: parent.start,
+            sig_time: parent.sig_time,
             contexts: Arc::clone(&parent.contexts),
             confirm_handles: Arc::new(Mutex::new(Vec::new())),
             buy_confirmed: Arc::clone(&parent.buy_confirmed),
