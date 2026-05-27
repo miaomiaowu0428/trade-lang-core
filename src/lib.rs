@@ -16,9 +16,9 @@
 //!   runtime-provider          solana-impl
 
 use ahash::AHashMap;
+use ahash::AHashMap as HashMap;
 use async_trait::async_trait;
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use trade_meta_compiler::{RuntimeValue, SymbolCategory, SymbolRegistry, TypeSpec};

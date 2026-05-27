@@ -5,8 +5,8 @@
 //!   - `cancel` — Done 信号 token：任意位置触发后整个 pipeline 取消进入 finally
 //!   - `start`  — 策略入场时间戳，供 Timeout 等计时插件使用
 
+use ahash::AHashMap as HashMap;
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
