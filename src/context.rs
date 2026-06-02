@@ -24,6 +24,11 @@ pub struct TradeTaskContext {
     pub vars: Arc<RwLock<HashMap<String, RuntimeValue>>>,
     /// Done 取消信号：`signal_done()` 触发后所有持有该 token 的 task 应及时退出
     pub cancel: CancellationToken,
+    /// 根取消信号（从顶层 new() 设置，spawn_child 继承）：
+    /// 用于 Spawn 中子任务主动终止整个 trade task（CancelTask/Finish executor）。
+    /// 与 `cancel` 的区别：cancel 是当前 ctx 的独立 token（Done 只关自己），
+    /// root_cancel 是整棵树的根节点。
+    pub root_cancel: CancellationToken,
     /// 策略执行开始时间
     pub start: Instant,
     /// 触发信号到达时刻（shred/gRPC 收到的 Instant），由 Monitor 在发出 MonitorMessage
@@ -46,6 +51,7 @@ impl TradeTaskContext {
         Self {
             vars: Arc::new(RwLock::new(HashMap::new())),
             cancel: CancellationToken::new(),
+            root_cancel: CancellationToken::new(),
             start: Instant::now(),
             sig_time: None,
             contexts: Arc::new(RwLock::new(Vec::new())),
@@ -63,6 +69,7 @@ impl TradeTaskContext {
         Self {
             vars: Arc::new(RwLock::new(HashMap::new())),
             cancel: parent.child_token(),
+            root_cancel: CancellationToken::new(),
             start: Instant::now(),
             sig_time: None,
             contexts: Arc::new(RwLock::new(Vec::new())),
@@ -82,6 +89,7 @@ impl TradeTaskContext {
         Self {
             vars: Arc::clone(&parent.vars),
             cancel: parent.cancel.child_token(),
+            root_cancel: parent.root_cancel.clone(),
             start: parent.start,
             sig_time: parent.sig_time,
             contexts: Arc::clone(&parent.contexts),
@@ -233,11 +241,21 @@ impl TradeTaskContext {
     }
 
     pub fn is_done(&self) -> bool {
-        self.cancel.is_cancelled()
+        self.cancel.is_cancelled() || self.root_cancel.is_cancelled()
     }
 
+    /// 仅等待本 ctx cancel token（旧版，请用 done_wait）
     pub fn done_future(&self) -> tokio_util::sync::WaitForCancellationFuture<'_> {
         self.cancel.cancelled()
+    }
+
+    /// 同时等待 cancel 和 root_cancel。任一取消即返回。
+    /// 用于 Spawn 子任务中——如果父 task 通过 Finish 终止，此 future 也会 resolve。
+    pub async fn done_wait(&self) {
+        tokio::select! {
+            _ = self.cancel.cancelled() => {}
+            _ = self.root_cancel.cancelled() => {}
+        }
     }
     // ── buy_confirmed 门──────────────────────────────────────────
 
