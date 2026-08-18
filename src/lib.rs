@@ -70,22 +70,14 @@ impl MonitorMessage {
 #[async_trait]
 pub trait DataItemHandler: Send + Sync {
     fn declared_return_type(&self) -> TypeSpec;
-    async fn get(
-        &self,
-        args: &HashMap<String, RuntimeValue>,
-        ctx: &Arc<TradeTaskContext>,
-    ) -> RuntimeValue;
+    async fn get(&self, args: &HashMap<String, RuntimeValue>, ctx: &Arc<TradeTaskContext>) -> RuntimeValue;
 }
 
 /// Executor：执行一个操作（交易等），可选返回值
 #[async_trait]
 pub trait ExecutorHandler: Send + Sync {
     fn declared_return_type(&self) -> Option<TypeSpec>;
-    async fn execute(
-        &self,
-        args: &HashMap<String, RuntimeValue>,
-        ctx: &Arc<TradeTaskContext>,
-    ) -> Option<RuntimeValue>;
+    async fn execute(&self, args: &HashMap<String, RuntimeValue>, ctx: &Arc<TradeTaskContext>) -> Option<RuntimeValue>;
 }
 
 /// Condition：评估条件是否满足（可阻塞轮询直到条件成立）
@@ -98,11 +90,7 @@ pub trait ExecutorHandler: Send + Sync {
 ///   - `side_value` — 可选的偏值（如累计询价次数），供 `let x = Cond(...)` 捕获
 #[async_trait]
 pub trait ConditionHandler: Send + Sync {
-    async fn evaluate(
-        &self,
-        args: &HashMap<String, RuntimeValue>,
-        ctx: &Arc<TradeTaskContext>,
-    ) -> (bool, Option<RuntimeValue>);
+    async fn evaluate(&self, args: &HashMap<String, RuntimeValue>, ctx: &Arc<TradeTaskContext>) -> (bool, Option<RuntimeValue>);
 }
 
 // ── ConfirmHandle ─────────────────────────────────────────────────────────
@@ -194,10 +182,7 @@ impl RuntimeRegistry {
         }
         for (name, handler) in &self.data_items {
             match symbol_registry.lookup(name, SymbolCategory::DataItem) {
-                None => errors.push(format!(
-                    "DataItem '{}' implemented but not defined in symbol table",
-                    name
-                )),
+                None => errors.push(format!("DataItem '{}' implemented but not defined in symbol table", name)),
                 Some(meta) => {
                     let declared = handler.declared_return_type();
                     if meta.returns.as_ref() != Some(&declared) {
@@ -221,10 +206,7 @@ impl RuntimeRegistry {
         }
         for (name, handler) in &self.executors {
             match symbol_registry.lookup(name, SymbolCategory::Executor) {
-                None => errors.push(format!(
-                    "Executor '{}' implemented but not defined in symbol table",
-                    name
-                )),
+                None => errors.push(format!("Executor '{}' implemented but not defined in symbol table", name)),
                 Some(meta) => {
                     let declared = handler.declared_return_type();
                     if declared != meta.returns {
@@ -247,42 +229,23 @@ impl RuntimeRegistry {
             }
         }
         for name in self.conditions.keys() {
-            if symbol_registry
-                .lookup(name, SymbolCategory::Condition)
-                .is_none()
-            {
-                errors.push(format!(
-                    "Condition '{}' implemented but not defined in symbol table",
-                    name
-                ));
+            if symbol_registry.lookup(name, SymbolCategory::Condition).is_none() {
+                errors.push(format!("Condition '{}' implemented but not defined in symbol table", name));
             }
         }
 
         // ── Monitor ───────────────────────────────────────────────────────────
         for meta in symbol_registry.all_symbols(SymbolCategory::Monitor) {
             if !self.monitors.contains_key(meta.name) {
-                errors.push(format!(
-                    "Monitor '{}' defined in symbol table but not implemented",
-                    meta.name
-                ));
+                errors.push(format!("Monitor '{}' defined in symbol table but not implemented", meta.name));
             }
         }
         for name in self.monitors.keys() {
-            if symbol_registry
-                .lookup(name, SymbolCategory::Monitor)
-                .is_none()
-            {
-                errors.push(format!(
-                    "Monitor '{}' implemented but not defined in symbol table",
-                    name
-                ));
+            if symbol_registry.lookup(name, SymbolCategory::Monitor).is_none() {
+                errors.push(format!("Monitor '{}' implemented but not defined in symbol table", name));
             }
         }
 
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
+        if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 }

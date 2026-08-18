@@ -155,10 +155,7 @@ impl TradeTaskContext {
 
     /// Sync variant — 取出并移除上下文条目。
     #[inline]
-    pub fn consume_context_sync<T: Any + Send + Sync>(
-        &self,
-        protocol: &'static str,
-    ) -> Option<Arc<T>> {
+    pub fn consume_context_sync<T: Any + Send + Sync>(&self, protocol: &'static str) -> Option<Arc<T>> {
         let mut guard = self.contexts.write();
         let pos = guard.iter().position(|(k, _)| *k == protocol)?;
         let (_, v) = guard.swap_remove(pos);
@@ -178,18 +175,12 @@ impl TradeTaskContext {
     }
 
     #[inline]
-    pub async fn get_context<T: Any + Send + Sync>(
-        &self,
-        protocol: &'static str,
-    ) -> Option<Arc<T>> {
+    pub async fn get_context<T: Any + Send + Sync>(&self, protocol: &'static str) -> Option<Arc<T>> {
         self.get_context_sync(protocol)
     }
 
     #[inline]
-    pub async fn consume_context<T: Any + Send + Sync>(
-        &self,
-        protocol: &'static str,
-    ) -> Option<Arc<T>> {
+    pub async fn consume_context<T: Any + Send + Sync>(&self, protocol: &'static str) -> Option<Arc<T>> {
         self.consume_context_sync(protocol)
     }
 
@@ -203,10 +194,7 @@ impl TradeTaskContext {
     /// condition evaluate 时调用：推入一个 handle。
     /// 若 buy 已成功（sell 阶段），直接 confirm。
     pub async fn push_confirm_handle(&self, handle: Box<dyn ConfirmHandle>, self_arc: &Arc<Self>) {
-        if self
-            .buy_confirmed
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.buy_confirmed.load(std::sync::atomic::Ordering::Acquire) {
             // 已过 buy 阶段，直接 confirm
             handle.confirm(self_arc).await;
         } else {
@@ -216,8 +204,7 @@ impl TradeTaskContext {
 
     /// buy 成功后调用：confirm 所有已推入的 handle，并标记 buy_confirmed
     pub async fn confirm_all_handles(self: &Arc<Self>) {
-        self.buy_confirmed
-            .store(true, std::sync::atomic::Ordering::Release);
+        self.buy_confirmed.store(true, std::sync::atomic::Ordering::Release);
         // 唤醒所有 wait_buy_confirmed 的等待者（如 Spawn 中的 condition）
         self.buy_confirmed_notify.notify_waiters();
         let handles: Vec<_> = self.confirm_handles.lock().await.drain(..).collect();
@@ -261,8 +248,7 @@ impl TradeTaskContext {
 
     /// 查询 buy 是否已确认（sell 阶段 后恒为 true）
     pub fn is_buy_confirmed(&self) -> bool {
-        self.buy_confirmed
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.buy_confirmed.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// 阻塞至 buy 确认。若已确认立即返回；否则等待 `confirm_all_handles` 唤醒。
